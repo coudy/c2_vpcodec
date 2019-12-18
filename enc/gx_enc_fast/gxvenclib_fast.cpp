@@ -26,6 +26,9 @@
 //#include <cutils/properties.h>
 
 #define ENCODE_DONE_TIMEOUT 100
+#define ALOGV(X,...) fprintf(stderr, X "\n" ,__VA_ARGS__);
+#define ALOGD(X,...) fprintf(stderr, X "\n", __VA_ARGS__);
+
 
 #ifndef UCODE_MODE_FULL
 #define UCODE_MODE_FULL 0
@@ -34,6 +37,7 @@
 static int encode_poll(int fd, int timeout)
 {
     struct pollfd poll_fd[1];
+    //usleep(1000000);
     poll_fd[0].fd = fd;
     poll_fd[0].events = POLLIN |POLLERR;
     return poll(poll_fd, 1, timeout);
@@ -124,12 +128,12 @@ static uint32_t copy_to_local(gx_fast_enc_drv_t* p)
     unsigned char* dst = NULL;
     if(p->src.pix_height<(p->src.mb_height<<4))
         crop_flag = true;
-
+    //if (crop_flag) fprintf(stderr, "Crop!!\n");
     if(p->src.fmt != AMVENC_YUV420)
         canvas_w = ((p->src.pix_width+31)>>5)<<5;
     else
         canvas_w = ((p->src.pix_width+63)>>6)<<6;
-
+    // ALOGD("Copying to local %x %d", p->input_buf.addr, p->src.pix_width*p->src.pix_height);
     src = (unsigned char*)p->src.plane[0];
     dst = p->input_buf.addr;
     if(p->src.pix_width !=canvas_w){
@@ -224,7 +228,7 @@ static int set_input(gx_fast_enc_drv_t* p, ulong *yuv, uint32_t enc_width, uint3
         if(fmt == AMVENC_YUV420)
             src->plane[2] = v;
     }else{
-        src->canvas = (uint32_t)yuv[3];
+        src->canvas = (uint32_t)yuv[3];        
     }
     src->type = type;
     src->fmt  = fmt;
@@ -248,11 +252,26 @@ static AMVEnc_Status start_ime(gx_fast_enc_drv_t* p, unsigned char* outptr,int* 
     AMVEnc_Status ret = AMVENC_FAIL;
     uint32_t status;
     uint32_t result[4];
-    uint32_t control_info[10];
+    uint32_t control_info[50+4];
     uint32_t total_time = 0;
 
+    memset(control_info, 0, sizeof(control_info));
+    //memset(p->output_buf.addr, 0, p->output_buf.size);
     if(p->logtime)
         gettimeofday(&p->start_test, NULL);
+
+    // control_info[0] = ENCODER_NON_IDR;
+    // control_info[1] = UCODE_MODE_FULL;
+    // control_info[2] = p->src.type;
+    // control_info[3] = p->src.fmt;
+    // control_info[4] = (p->src.type == VMALLOC_BUFFER)?0:p->src.canvas;
+    // control_info[5] = p->src.framesize;
+    // control_info[6] = (p->fix_qp >= 0)?p->fix_qp:p->quant;
+    // control_info[7] = AMVENC_FLUSH_FLAG_INPUT|AMVENC_FLUSH_FLAG_OUTPUT; // flush op;
+    // control_info[7] |=  AMVENC_FLUSH_FLAG_INTER_INFO;
+    // control_info[8] = ENCODE_DONE_TIMEOUT; // timeout op;
+    // control_info[9] = p->nr_mode; // nr mode 0: disable 1: snr 2: tnr  2: 3dnr
+
 
     control_info[0] = ENCODER_NON_IDR;
     control_info[1] = UCODE_MODE_FULL;
@@ -262,17 +281,41 @@ static AMVEnc_Status start_ime(gx_fast_enc_drv_t* p, unsigned char* outptr,int* 
     control_info[5] = p->src.framesize;
     control_info[6] = (p->fix_qp >= 0)?p->fix_qp:p->quant;
     control_info[7] = AMVENC_FLUSH_FLAG_INPUT|AMVENC_FLUSH_FLAG_OUTPUT; // flush op;
-    control_info[7] |=  AMVENC_FLUSH_FLAG_INTER_INFO;
+    control_info[7] |=  AMVENC_FLUSH_FLAG_INTER_INFO | AMVENC_FLUSH_FLAG_DUMP | AMVENC_FLUSH_FLAG_CBR;
     control_info[8] = ENCODE_DONE_TIMEOUT; // timeout op;
-    control_info[9] = p->nr_mode; // nr mode 0: disable 1: snr 2: tnr  2: 3dnr
+    
+    control_info[9] = 0;
+    control_info[10] = 0;
+    control_info[11] = 0;
+    control_info[12] = 0;
+    
+    control_info[13] = p->src.pix_width;
+    control_info[14] = p->src.pix_height;
+    control_info[15] = 0;
+    
+    control_info[16] = p->nr_mode; // nr mode 0: disable 1: snr 2: tnr  2: 3dnr
+// TODO ,this might cause bug in some case
+
+    int data_offset = 17 + 8 * 3;
+    data_offset += 3;
+    // ALOGD("dataoffset - ime - %d", data_offset);
+    control_info[ data_offset ++ ] = 16;
+    control_info[ data_offset ++ ] = 9;
+    control_info[ data_offset ++ ] = 4;
+    control_info[ data_offset ++ ] = 8;
+
+    control_info[17] = 0;
+    if (control_info[6] == 64)
+        ALOGD("THIS WILL CRASH KERNEL\n", 0);
+
     ioctl(p->fd, FASTGX_AVC_IOC_NEW_CMD, &control_info[0]);
 
     if(encode_poll(p->fd, -1)<=0){
         //ALOGE("start_ime: poll fail, fd:%d", p->fd);
         return AMVENC_TIMEOUT;
     }
-
     ioctl(p->fd, FASTGX_AVC_IOC_GET_STAGE, &status);
+    
     ret = AMVENC_FAIL;
     if(status == ENCODER_IDR_DONE){
         ioctl(p->fd, FASTGX_AVC_IOC_GET_OUTPUT_SIZE, &result[0]);
@@ -284,6 +327,8 @@ static AMVEnc_Status start_ime(gx_fast_enc_drv_t* p, unsigned char* outptr,int* 
             p->i16_weight = result[3];
             Parser_DumpInfo(p);
             ret = AMVENC_PICTURE_READY;
+            
+            //for(int i=0;i<100 && i < result[0];i++) fprintf(stderr, "%d ", outptr[i]);
             //ALOGV("start_ime: done size: %d, fd:%d ", result[0], p->fd);
         }
     }else{
@@ -308,45 +353,92 @@ static AMVEnc_Status start_intra(gx_fast_enc_drv_t* p, unsigned char* outptr,int
     AMVEnc_Status ret = AMVENC_FAIL;
     uint32_t status;
     uint32_t result[4];
-    uint32_t control_info[10];
+    uint32_t control_info[54];
     uint32_t total_time = 0;
+
+    uint32_t flush_ctl[3] = {
+        3, 0, p->output_buf.size
+    };
+
+    memset(control_info, 0, sizeof(control_info));
+    //memset(p->output_buf.addr, 0, p->output_buf.size);    
     if(p->logtime)
         gettimeofday(&p->start_test, NULL);
-
+ 
     control_info[0] = ENCODER_IDR;
     control_info[1] = UCODE_MODE_FULL;
+    //fprintf(stderr,"Use type %d\n", p->src.type);
     control_info[2] = p->src.type;
     control_info[3] = p->src.fmt;
     control_info[4] = (p->src.type == VMALLOC_BUFFER)?0:p->src.canvas;
     control_info[5] = p->src.framesize; //(16X3/2)
     control_info[6] = (p->fix_qp >= 0)?p->fix_qp:p->quant;
     control_info[7] = AMVENC_FLUSH_FLAG_INPUT|AMVENC_FLUSH_FLAG_OUTPUT; // flush op;
-    control_info[7] |=  AMVENC_FLUSH_FLAG_INTRA_INFO;
+    control_info[7] |=  AMVENC_FLUSH_FLAG_INTRA_INFO | AMVENC_FLUSH_FLAG_DUMP | AMVENC_FLUSH_FLAG_CBR;
     control_info[8] = ENCODE_DONE_TIMEOUT; // timeout op;
+    
+    control_info[9] = 0;
+    control_info[10] = 0;
+    control_info[11] = 0;
+    control_info[12] = 0;
+    
+    control_info[13] = p->src.pix_width;
+    control_info[14] = p->src.pix_height;
+    control_info[15] = 0;
+    //control_info[15] = (p->src.type == VMALLOC_BUFFER)?0:1;
+    
     if (p->total_encode_frame > 0)
-        control_info[9] = p->nr_mode; // nr mode 0: disable 1: snr 2: tnr  2: 3dnr
+        control_info[16] = p->nr_mode; // nr mode 0: disable 1: snr 2: tnr  2: 3dnr
     else
-        control_info[9] = (p->nr_mode > 0)?1:0;
+        control_info[16] = (p->nr_mode > 0)?1:0;
+
+// TODO ,this might cause bug in some case
+    control_info[17] = 0;
+
+    int data_offset = 17 + 8 * 3;
+    data_offset += 3;
+    // ALOGD("dataoffset - %d", data_offset);
+
+    control_info[ data_offset ++ ] = 16;
+    control_info[ data_offset ++ ] = 9;
+    control_info[ data_offset ++ ] = 4;
+    control_info[ data_offset ++ ] = 8;
+
+
+    if (control_info[6] == 64)
+        ALOGD("THIS WILL CRASH KERNEL\n", 0);
     ioctl(p->fd, FASTGX_AVC_IOC_NEW_CMD, &control_info[0]);
 
     if(encode_poll(p->fd, -1)<=0){
         //ALOGE("start_intra: poll fail, fd:%d", p->fd);
         return AMVENC_TIMEOUT;
     }
-
+// ioctl(p->fd, FASTGX_AVC_IOC_FLUSH_CACHE, &flush_ctl[0]);    // To Device
     ioctl(p->fd, FASTGX_AVC_IOC_GET_STAGE, &status);
+    // ALOGD("start_intra: status back:%d", status);
     ret = AMVENC_FAIL;
     if(status == ENCODER_IDR_DONE){
         ioctl(p->fd, FASTGX_AVC_IOC_GET_OUTPUT_SIZE, &result[0]);
+        
+        //ioctl(p->fd, FASTGX_AVC_IOC_FLUSH_DMA, &flush_ctl[0]);      // From Device  
+        
+        usleep(100);
+        
         if((result[0] < p->output_buf.size)&&(result[0]>0)){
             memcpy(outptr,p->output_buf.addr,result[0]);
             *datalen  = result[0];
+            // int sum = 0;
+            // for(int i=0;i<result[0];i++)
+            //     sum += p->output_buf.addr[i];
+
             p->me_weight = result[1];
             p->i4_weight = result[2];
             p->i16_weight = result[3];
             Parser_DumpInfo(p);
             ret = AMVENC_NEW_IDR;
-            //ALOGV("start_intra: done size: %d, fd:%d", result[0], p->fd);
+
+            //for(int i=0;i<100 && i < result[0];i++) fprintf(stderr, "%d ", outptr[i]);            
+            // ALOGV("start_intra: done size: %d, fd:%d - %d", result[0], p->fd, sum);
         }
     }else{
         //ALOGE("start_intra: encode timeout, status:%d, fd:%d",status, p->fd);
@@ -359,7 +451,7 @@ static AMVEnc_Status start_intra(gx_fast_enc_drv_t* p, unsigned char* outptr,int
             gettimeofday(&p->end_test, NULL);
             total_time = (p->end_test.tv_sec - p->start_test.tv_sec)*1000000 + p->end_test.tv_usec -p->start_test.tv_usec;
             p->total_encode_time +=total_time;
-            //ALOGD("start_intra: need time: %d us, frame num:%d, fd:%d",total_time, p->total_encode_frame, p->fd);
+             //ALOGD("start_intra: need time: %d us, frame num:%d, fd:%d",total_time, p->total_encode_frame, p->fd);
         }
     }
     return ret;
@@ -369,7 +461,7 @@ void* GxInitFastEncode(int fd, amvenc_initpara_t* init_para)
 {
     int addr_index = 0;
     int ret = 0;
-    uint32_t buff_info[30];
+    uint32_t buff_info[50];
     uint32_t mode = UCODE_MODE_FULL;
     gx_fast_enc_drv_t* p = NULL;
     int i = 0;
@@ -408,6 +500,7 @@ void* GxInitFastEncode(int fd, amvenc_initpara_t* init_para)
         return NULL;
     }
 
+    //p->quant = init_para->initQP;
     p->quant = init_para->initQP;
     p->enc_width = init_para->enc_width;
     p->enc_height = init_para->enc_height;
@@ -421,8 +514,9 @@ void* GxInitFastEncode(int fd, amvenc_initpara_t* init_para)
     p->gotSPS = false;
     p->pps_len = 0;
     p->gotPPS = false;
-    p->fix_qp = -1;
-    p->nr_mode = 3;
+    p->fix_qp = 28;
+    p->nr_mode = 0;
+    p->constcbr = init_para->constcbr;
 
     buff_info[0] = mode;
     buff_info[1] = p->src.mb_height;
@@ -447,27 +541,43 @@ void* GxInitFastEncode(int fd, amvenc_initpara_t* init_para)
     p->input_buf.addr = p->mmap_buff.addr+buff_info[1];
     p->input_buf.size = buff_info[3]-buff_info[1];
 
-    p->ref_buf_y[0].addr = p->mmap_buff.addr +buff_info[3];
-    p->ref_buf_y[0].size = buff_info[4];
-    p->ref_buf_uv[0].addr = p->mmap_buff.addr +buff_info[5];
-    p->ref_buf_uv[0].size = buff_info[6];
+    // p->ref_buf_y[0].addr = p->mmap_buff.addr +buff_info[3];
+    // p->ref_buf_y[0].size = buff_info[4];
+    // p->ref_buf_uv[0].addr = p->mmap_buff.addr +buff_info[5];
+    // p->ref_buf_uv[0].size = buff_info[6];
 
-    p->ref_buf_y[1].addr = p->mmap_buff.addr +buff_info[7];
-    p->ref_buf_y[1].size = buff_info[8];
-    p->ref_buf_uv[1].addr = p->mmap_buff.addr +buff_info[9];
-    p->ref_buf_uv[1].size = buff_info[10];
-    p->output_buf.addr = p->mmap_buff.addr +buff_info[11] ;
-    p->output_buf.size = buff_info[12];
-    p->dump_buf.addr = p->mmap_buff.addr +buff_info[13] ;
-    p->dump_buf.size = buff_info[14];
+    // p->ref_buf_y[1].addr = p->mmap_buff.addr +buff_info[7];
+    // p->ref_buf_y[1].size = buff_info[8];
+    // p->ref_buf_uv[1].addr = p->mmap_buff.addr +buff_info[9];
+    // p->ref_buf_uv[1].size = buff_info[10];
+    // ALOGV("Initing input_buf size: %x %d\n", p->input_buf.addr, p->input_buf.size);
+    
+    p->output_buf.addr = p->mmap_buff.addr +buff_info[3] ;
+    p->output_buf.size = buff_info[4];
+    p->dump_buf.addr = p->mmap_buff.addr +buff_info[7] ;
+    p->dump_buf.size = buff_info[8];
+    p->cbr_buf.addr = p->mmap_buff.addr +buff_info[9] ;
+    p->cbr_buf.size = buff_info[10];
+    // ALOGV("Initing output_buf size: %x %d\n", p->output_buf.addr, p->output_buf.size);
 
+    // memset(p->input_buf.addr, 0, p->input_buf.size);
+    // memset(p->output_buf.addr, 0, p->output_buf.size);
+    // memset(p->dump_buf.addr, 0, p->dump_buf.size);
+    uint16_t *ut  = (uint16_t *)p->cbr_buf.addr;
+    if (p->constcbr & 0x10000) {
+        for(int i=0;i< p->cbr_buf.size/2 ;i++)  ut[i] = p->constcbr & 0xFFFF;
+    }
+    else {
+        for(int i=0;i< p->cbr_buf.size/2 ;i++)  ut[i] = 0x1520;
+    }
+    //memset(p->cbr_buf.addr, 0x02, p->cbr_buf.size);
     p->mCancel = false;
     p->total_encode_frame  = 0;
     p->total_encode_time = 0;
     {
         //char prop[PROPERTY_VALUE_MAX];
         //int value = 0;        
-        p->logtime = false;
+        p->logtime = true;
         //memset(prop,0,sizeof(prop));        
         //if(property_get("hw.encoder.log.flag", prop, NULL) > 0){            
         //    sscanf(prop,"%d",&value);
@@ -511,6 +621,20 @@ AMVEnc_Status GxFastEncodeInitFrame(void *dev, ulong *yuv, AMVEncBufferType type
     if(p->logtime)
         gettimeofday(&p->start_test, NULL);
 
+    // memset(p->input_buf.addr, 0, p->input_buf.size);
+    // memset(p->output_buf.addr, 0x55, p->output_buf.size);
+    // memset(p->dump_buf.addr, 0, p->dump_buf.size);
+    uint16_t *ut  = (uint16_t *)p->cbr_buf.addr;
+    // Low quality
+    // First two digits are I-frame   two latters are P-frame ?
+
+    if (p->constcbr & 0x10000) {
+        for(int i=0;i< p->cbr_buf.size/2 ;i++)  ut[i] = p->constcbr & 0xFFFF;
+    }
+    else {
+        for(int i=0;i< p->cbr_buf.size/2 ;i++)  ut[i] = 0x1520;
+    //for(int i=0;i< p->cbr_buf.size/2 ;i++)  ut[i] = 0x00;
+    }
     set_input(p, yuv,p->enc_width, p->enc_height, type,fmt);
 
     p->IDRframe =IDRframe;
@@ -538,10 +662,11 @@ AMVEnc_Status GxFastEncodeSPS_PPS(void* dev, unsigned char* outptr,int* datalen)
 
     control_info[0] = ENCODER_SEQUENCE; 
     control_info[1] = UCODE_MODE_FULL;
-    control_info[2] = 26; //init qp;
+    control_info[2] = p->quant; //init qp;
     control_info[3] = AMVENC_FLUSH_FLAG_OUTPUT;
     control_info[4] = 0; // never timeout
     ioctl(p->fd, FASTGX_AVC_IOC_NEW_CMD, &control_info[0]);
+    
 
     if(encode_poll(p->fd, -1)<=0){
         //ALOGE("sps pps: poll fail, fd:%d", p->fd);
@@ -550,12 +675,13 @@ AMVEnc_Status GxFastEncodeSPS_PPS(void* dev, unsigned char* outptr,int* datalen)
 
     ioctl(p->fd, FASTGX_AVC_IOC_GET_STAGE, &status);	
 
-    //ALOGV("FastEncodeSPS_PPS status:%d, fd:%d", status, p->fd);
+    // ALOGV("FastEncodeSPS_PPS status:%d, fd:%d\n", status, p->fd);
     ret = AMVENC_FAIL;
     if(status == ENCODER_PICTURE_DONE){
         ioctl(p->fd, FASTGX_AVC_IOC_GET_OUTPUT_SIZE, &result[0]);
         p->sps_len = (result[0] >>16)&0xffff;
         p->pps_len = result[0] & 0xffff;
+        //ALOGV("SPS len - PPS len %d %d - %d", p->sps_len, p->pps_len, p->output_buf.size);
         if(((p->sps_len+ p->pps_len)< p->output_buf.size)&&(p->sps_len>0)&&(p->pps_len>0)){
             p->gotSPS = true;
             p->gotPPS= true;
@@ -567,6 +693,7 @@ AMVEnc_Status GxFastEncodeSPS_PPS(void* dev, unsigned char* outptr,int* datalen)
         //ALOGE("sps pps timeout, status:%d, fd:%d",status, p->fd);
         ret = AMVENC_TIMEOUT;
     }
+    //    getc(stdin);
     return ret;
 }
 
@@ -613,8 +740,8 @@ void GxUnInitFastEncode(void* dev)
         munmap(p->mmap_buff.addr ,p->mmap_buff.size);
 
     if(p->logtime)
-        //ALOGD("total_encode_frame: %d, total_encode_time: %d ms, fd:%d",
-        //            p->total_encode_frame, p->total_encode_time/1000, p->fd);
+        ALOGD("total_encode_frame: %d, total_encode_time: %d ms, fd:%d",
+                    p->total_encode_frame, p->total_encode_time/1000, p->fd);
     free(p);
     return;
 }

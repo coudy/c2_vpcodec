@@ -86,6 +86,8 @@ typedef struct
     uint32_t enc_height;
     uint32_t quant;
 
+    uint32_t constcbr;
+
     int fix_qp;
     int nr_mode;
 
@@ -105,10 +107,11 @@ typedef struct
 
     gx_fast_buff_t mmap_buff;
     gx_fast_buff_t input_buf;
-    gx_fast_buff_t ref_buf_y[2];
-    gx_fast_buff_t ref_buf_uv[2];
+//    gx_fast_buff_t ref_buf_y[2];
+//    gx_fast_buff_t ref_buf_uv[2];
     gx_fast_buff_t output_buf;
     gx_fast_buff_t dump_buf;
+    gx_fast_buff_t cbr_buf;
 
     mb_t* mb_info;
 

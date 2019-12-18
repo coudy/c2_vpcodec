@@ -6,6 +6,10 @@
 #include <AML_HWEncoder.h>
 #include <enc_define.h>
 
+#define ALOGE(...) fprintf(stderr, __VA_ARGS__);
+#define ALOGI(...) fprintf(stderr, __VA_ARGS__);
+#define ALOGD(...) fprintf(stderr, __VA_ARGS__);
+
 const char version[] = "Amlogic libvpcodec version 1.0";
 
 const char *vl_get_version()
@@ -13,7 +17,7 @@ const char *vl_get_version()
     return version;
 }
 
-int initEncParams(AMVEncHandle *handle, int width, int height, int frame_rate, int bit_rate, int gop)
+int initEncParams(AMVEncHandle *handle, int width, int height, int frame_rate, int bit_rate, int gop, uint32_t constcbr)
 {
     memset(&(handle->mEncParams), 0, sizeof(AMVEncParams));
     //ALOGD("bit_rate:%d", bit_rate);
@@ -45,34 +49,34 @@ int initEncParams(AMVEncHandle *handle, int width, int height, int frame_rate, i
     handle->mEncParams.width = width;
     handle->mEncParams.height = height;
     handle->mEncParams.bitrate = bit_rate;
-    handle->mEncParams.frame_rate = 1000 * frame_rate;  // In frames/ms!
+    handle->mEncParams.frame_rate = 1000 * frame_rate; // In frames/ms!
     handle->mEncParams.CPB_size = (uint32)(bit_rate >> 1);
     handle->mEncParams.FreeRun = AVC_OFF;
     handle->mEncParams.MBsIntraRefresh = 0;
     handle->mEncParams.MBsIntraOverlap = 0;
+    handle->mEncParams.constcbr = constcbr;
     // Set IDR frame refresh interval
-    if ((unsigned) gop == 0xffffffff)
+    if ((unsigned)gop == 0xffffffff)
     {
-        handle->mEncParams.idr_period = -1;//(mIDRFrameRefreshIntervalInSec * mVideoFrameRate);
+        handle->mEncParams.idr_period = -1; //(mIDRFrameRefreshIntervalInSec * mVideoFrameRate);
     }
     else if (gop == 0)
     {
-        handle->mEncParams.idr_period = 0;  // All I frames
+        handle->mEncParams.idr_period = 0; // All I frames
     }
     else
     {
         handle->mEncParams.idr_period = gop + 1;
     }
     // Set profile and level
-    handle->mEncParams.profile = AVC_BASELINE;
+    handle->mEncParams.profile = AVC_HIGH;
     handle->mEncParams.level = AVC_LEVEL4;
     handle->mEncParams.initQP = 30;
     handle->mEncParams.BitrateScale = AVC_OFF;
     return 0;
 }
 
-
-vl_codec_handle_t vl_video_encoder_init(vl_codec_id_t codec_id, int width, int height, int frame_rate, int bit_rate, int gop, vl_img_format_t img_format)
+vl_codec_handle_t vl_video_encoder_init(vl_codec_id_t codec_id, int width, int height, int frame_rate, int bit_rate, int gop, vl_img_format_t img_format, uint32_t constcbr)
 {
     int ret;
     AMVEncHandle *mHandle = new AMVEncHandle;
@@ -80,33 +84,33 @@ vl_codec_handle_t vl_video_encoder_init(vl_codec_id_t codec_id, int width, int h
     if (mHandle == NULL)
         goto exit;
     memset(mHandle, 0, sizeof(AMVEncHandle));
-    ret = initEncParams(mHandle, width, height, frame_rate, bit_rate, gop);
+    ret = initEncParams(mHandle, width, height, frame_rate, bit_rate, gop, constcbr);
     if (ret < 0)
         goto exit;
     ret = AML_HWEncInitialize(mHandle, &(mHandle->mEncParams), &has_mix, 2);
     if (ret < 0)
         goto exit;
     mHandle->mSpsPpsHeaderReceived = false;
-    mHandle->mNumInputFrames = -1;  // 1st two buffers contain SPS and PPS
-    return (vl_codec_handle_t) mHandle;
+    mHandle->mNumInputFrames = -1; // 1st two buffers contain SPS and PPS
+    return (vl_codec_handle_t)mHandle;
 exit:
     if (mHandle != NULL)
         delete mHandle;
-    return (vl_codec_handle_t) NULL;
+    return (vl_codec_handle_t)NULL;
 }
 
-
-
-int vl_video_encoder_encode(vl_codec_handle_t codec_handle, vl_frame_type_t frame_type, char *in, int in_size, char **out)
+int vl_video_encoder_encode(vl_codec_handle_t codec_handle, vl_frame_type_t frame_type, char *in, int in_size, char **out, int inputmemtype, vl_img_format_t img_format)
 {
     int ret;
     uint8_t *outPtr = NULL;
     uint32_t dataLength = 0;
     int type;
     AMVEncHandle *handle = (AMVEncHandle *)codec_handle;
+    //handle->mSpsPpsHeaderReceived = 0;
     if (!handle->mSpsPpsHeaderReceived)
     {
-        ret = AML_HWEncNAL(handle, (unsigned char *)*out, (unsigned int *)&in_size/*should be out size*/, &type);
+
+        ret = AML_HWEncNAL(handle, (unsigned char *)*out, (unsigned int *)&in_size /*should be out size*/, &type);
         if (ret == AMVENC_SUCCESS)
         {
             handle->mSPSPPSDataSize = 0;
@@ -115,14 +119,19 @@ int vl_video_encoder_encode(vl_codec_handle_t codec_handle, vl_frame_type_t fram
             {
                 handle->mSPSPPSDataSize = in_size;
                 memcpy(handle->mSPSPPSData, (unsigned char *)*out, handle->mSPSPPSDataSize);
-                //ALOGI("get mSPSPPSData size= %d at line %d \n", handle->mSPSPPSDataSize, __LINE__);
+                ///ALOGI("get mSPSPPSData size= %d at line %d \n", handle->mSPSPPSDataSize, __LINE__);
             }
             handle->mNumInputFrames = 0;
             handle->mSpsPpsHeaderReceived = true;
         }
         else
         {
-            //ALOGE("Encode SPS and PPS error, encoderStatus = %d. handle: %p", ret, (void *)handle);
+            ALOGE("Encode SPS and PPS error, encoderStatus = %d. handle: %p\n", ret, (void *)handle);
+
+            handle->mSPSPPSDataSize = 0;
+            handle->mNumInputFrames = 0;
+            handle->mSpsPpsHeaderReceived = true;
+
             return -1;
         }
     }
@@ -135,13 +144,33 @@ int vl_video_encoder_encode(vl_codec_handle_t codec_handle, vl_frame_type_t fram
         /* TODO*/
         videoInput.bitrate = handle->mEncParams.bitrate;
         videoInput.frame_rate = handle->mEncParams.frame_rate / 1000;
-        videoInput.coding_timestamp = handle->mNumInputFrames * 1000 / videoInput.frame_rate;  // in ms
-        videoInput.fmt = AMVENC_NV21;
+        videoInput.coding_timestamp = handle->mNumInputFrames * 1000 / videoInput.frame_rate; // in ms
+        //
+        if (img_format == IMG_FMT_RGB24)
+            videoInput.fmt = AMVENC_RGB888;
+        else
+        {
+            videoInput.fmt = AMVENC_NV12;
+
+        }
+
         videoInput.YCbCr[0] = (unsigned long)in;
         videoInput.YCbCr[1] = (unsigned long)(videoInput.YCbCr[0] + videoInput.height * videoInput.pitch);
         videoInput.YCbCr[2] = 0;
-        videoInput.canvas = 0xffffffff;
-        videoInput.type = VMALLOC_BUFFER;
+        // Hey, I can set this, right? 
+        if (inputmemtype == PHYSICAL_BUFF) {
+            videoInput.canvas = (unsigned long)in;
+            videoInput.type = PHYSICAL_BUFF;
+
+        } 
+        if (inputmemtype == VMALLOC_BUFFER) {
+            videoInput.canvas = 0xffffffff;
+            videoInput.type = VMALLOC_BUFFER;
+        }
+        
+//        videoInput.canvas = 0xffffffff;
+//        videoInput.type = VMALLOC_BUFFER;
+        
         videoInput.disp_order = handle->mNumInputFrames;
         videoInput.op_flag = 0;
         if (handle->mKeyFrameRequested == true)
@@ -150,24 +179,25 @@ int vl_video_encoder_encode(vl_codec_handle_t codec_handle, vl_frame_type_t fram
             handle->mKeyFrameRequested = false;
         }
         ret = AML_HWSetInput(handle, &videoInput);
+        // ALOGE("setting input %d at line %d\n", ret, __LINE__);
         if (ret == AMVENC_SUCCESS || ret == AMVENC_NEW_IDR)
         {
             ++(handle->mNumInputFrames);
 
             if (ret == AMVENC_NEW_IDR)
             {
-                outPtr = (uint8_t *) *out + handle->mSPSPPSDataSize;
-                dataLength  = /*should be out size */in_size - handle->mSPSPPSDataSize;
+                outPtr = (uint8_t *)*out + handle->mSPSPPSDataSize;
+                dataLength = /*should be out size */ in_size - handle->mSPSPPSDataSize;
             }
             else
             {
-                outPtr = (uint8_t *) *out;
-                dataLength  = /*should be out size */in_size;
+                outPtr = (uint8_t *)*out;
+                dataLength = /*should be out size */ in_size;
             }
         }
         else if (ret < AMVENC_SUCCESS)
         {
-            //ALOGE("encoderStatus = %d at line %d, handle: %p", ret, __LINE__, (void *)handle);
+            ALOGE("encoderStatus = %d at line %d, handle: %p\n", ret, __LINE__, (void *)handle);
             return -1;
         }
 
@@ -178,9 +208,9 @@ int vl_video_encoder_encode(vl_codec_handle_t codec_handle, vl_frame_type_t fram
             {
                 if (handle->mSPSPPSData)
                 {
-                    memcpy((uint8_t *) *out, handle->mSPSPPSData, handle->mSPSPPSDataSize);
+                    memcpy((uint8_t *)*out, handle->mSPSPPSData, handle->mSPSPPSDataSize);
                     dataLength += handle->mSPSPPSDataSize;
-                    //ALOGI("copy mSPSPPSData to buffer size= %d at line %d \n", handle->mSPSPPSDataSize, __LINE__);
+                    // ALOGI("copy mSPSPPSData to buffer size= %d at line %d \n", handle->mSPSPPSDataSize, __LINE__);
                 }
             }
         }
@@ -192,7 +222,7 @@ int vl_video_encoder_encode(vl_codec_handle_t codec_handle, vl_frame_type_t fram
                 handle->mKeyFrameRequested = true;
                 ret = AMVENC_SKIPPED_PICTURE;
             }
-            //ALOGD("ret = %d at line %d, handle: %p", ret, __LINE__, (void *)handle);
+            ALOGD("ret = %d at line %d, handle: %p", ret, __LINE__, (void *)handle);
         }
         else if (ret != AMVENC_SUCCESS)
         {
@@ -201,7 +231,7 @@ int vl_video_encoder_encode(vl_codec_handle_t codec_handle, vl_frame_type_t fram
 
         if (ret < AMVENC_SUCCESS)
         {
-            //ALOGE("encoderStatus = %d at line %d, handle: %p", ret , __LINE__, (void *)handle);
+            ALOGE("encoderStatus = %d at line %d, handle: %p\n", ret, __LINE__, (void *)handle);
             return -1;
         }
     }

@@ -6,6 +6,8 @@
 #include "enc_define.h"
 #include "parser.h"
 
+#define ALOGV(X,...) fprintf(stderr, X "\n" ,__VA_ARGS__);
+
 //For Intra4x4/Intra16x16/Inter16x16/Inter16x8/Inter8x16
 #define get_mb_x(addr) *((unsigned char *)(addr+7))
 #define get_mb_y(addr) *((unsigned char *)(addr+6))
@@ -101,6 +103,7 @@ int Parser_DumpInfo(gx_fast_enc_drv_t* p)
     mb_t* info = p->mb_info;
     unsigned char* cur_mb = p->dump_buf.addr;
     unsigned char* next_mb = cur_mb;
+    //ALOGV("T %d %d %d %d", cur_mb[0], cur_mb[1], cur_mb[2], cur_mb[3]);
     for(y = 0; y < p->src.mb_height; y++){
         for(x = 0; x < p->src.mb_width; x++){
             cur_mb = next_mb;

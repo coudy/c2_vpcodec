@@ -12,7 +12,12 @@
 #include "rate_control_gx_fast.h"
 //#include <cutils/properties.h>
 
-#define RC_MAX_QUANT 28
+#define ALOGV(X, ...)  fprintf(stderr, X "\n",__VA_ARGS__);
+#define ALOGD(X, ...)  fprintf(stderr, X "\n",__VA_ARGS__);
+#define ALOGE(...)  fprintf(stderr,  "\n",__VA_ARGS__);
+
+
+#define RC_MAX_QUANT 14
 #define RC_MIN_QUANT 1   //cap to 10 to prevent rate fluctuation
 
 #define NO_REENCODE
@@ -290,6 +295,8 @@ AMVEnc_Status GxFastRCInitFrameQP(void *dev, void *rc,bool IDR,int bitrate, floa
         }else{
             calculateQuantizer(p,rateCtrl,IDR);
             p->quant = rateCtrl->Qc;
+            //ALOGD("Quant: %d\n", p->quant);
+ 
             if(rateCtrl->frame_rate != frame_rate || rateCtrl->bitRate != bitrate || rateCtrl->force_IDR){
                 rateCtrl->refresh = true;
                 //ALOGD("we got new config, frame_rate:%f, bitrate:%d, force_IDR:%d",frame_rate, bitrate, rateCtrl->force_IDR);

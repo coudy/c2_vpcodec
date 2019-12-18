@@ -1,6 +1,8 @@
 #ifndef _INCLUDED_COM_VIDEOPHONE_CODEC
 #define _INCLUDED_COM_VIDEOPHONE_CODEC
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -21,6 +23,7 @@ extern "C" {
     {
         IMG_FMT_NONE,
         IMG_FMT_NV12,
+        IMG_FMT_RGB24,
 
     } vl_img_format_t;
 
@@ -33,6 +36,7 @@ extern "C" {
         FRAME_TYPE_P,
 
     } vl_frame_type_t;
+
 
     /**
      * Get codec version info
@@ -53,7 +57,7 @@ extern "C" {
      *@param : img_format
      *@return : if success return encoder codec handle，else return <= 0
      */
-	extern vl_codec_handle_t vl_video_encoder_init(vl_codec_id_t codec_id, int width, int height, int frame_rate, int bit_rate, int gop, vl_img_format_t img_format);
+	extern vl_codec_handle_t vl_video_encoder_init(vl_codec_id_t codec_id, int width, int height, int frame_rate, int bit_rate, int gop, vl_img_format_t img_format, uint32_t constcbr = 0x1ff1e);
 
     /**
      * encode image 
@@ -65,7 +69,7 @@ extern "C" {
      *@param : out: out put data
      *@return ：if success return the data lenght of out put data, else return <= 0
      */
-	extern int vl_video_encoder_encode(vl_codec_handle_t handle, vl_frame_type_t type, char *in, int in_size, char **out);
+	extern int vl_video_encoder_encode(vl_codec_handle_t handle, vl_frame_type_t type, char *in, int in_size, char **out, int inputmemtype = 0, vl_img_format_t img_format = IMG_FMT_NV12);
 
     /**
      * destroy encoder

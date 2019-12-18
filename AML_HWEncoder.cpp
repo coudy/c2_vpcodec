@@ -14,6 +14,12 @@
 #include "AML_HWEncoder.h"
 #include "enc_api.h"
 
+
+#define ALOGV(X, ...)  fprintf(stderr, X "\n",__VA_ARGS__);
+#define ALOGD(X, ...)  fprintf(stderr, X "\n",__VA_ARGS__);
+#define ALOGE(...)  fprintf(stderr,  "\n",__VA_ARGS__);
+
+
 AMVEnc_Status DetermineFrameNum(AMVEncHandle *Handle, amvenc_info_t* info, uint32 modTime, uint *frameNum, uint32 new_frame_rate, bool force_IDR)
 {
     uint32 modTimeRef = info->modTimeRef;
@@ -150,7 +156,7 @@ AMVEnc_Status AML_HWEncInitialize(AMVEncHandle *Handle, AMVEncParams *encParam, 
     info->nSliceHeaderSpacing = encParam->nSliceHeaderSpacing;
     info->MBsIntraRefresh = encParam->MBsIntraRefresh;
     info->MBsIntraOverlap = encParam->MBsIntraOverlap;
-
+    info->constcbr = encParam->constcbr;
     if(info->initQP == 0){
 #if 0
         double L1, L2, L3, bpp;
@@ -194,6 +200,8 @@ AMVEnc_Status AML_HWEncInitialize(AMVEncHandle *Handle, AMVEncParams *encParam, 
     info->hw_info.init_para.cpbSize = info->cpbSize;
     info->hw_info.init_para.bitrate_scale = (encParam->BitrateScale== AVC_ON)?true:false;
     info->hw_info.init_para.encode_once = encParam->encode_once;
+    info->hw_info.init_para.constcbr = info->constcbr;
+    
     status = InitAMVEncode(&info->hw_info,force_mode);
     if(status != AMVENC_SUCCESS){
         goto exit;
@@ -331,15 +339,16 @@ AMVEnc_Status AML_HWEncNAL(AMVEncHandle *Handle, unsigned char *buffer, unsigned
             break;
         case AMVEnc_Encoding_Frame:
             ret = AMVEncodeSlice(&info->hw_info,buffer,&datalen, false);
+            // ALOGD("AML_HWEncNAL state: %d, err=%d. handle: %p - %d",info->state,ret, Handle, datalen);
             if (ret == AMVENC_TIMEOUT){
-                //ALOGD("AML_HWEncNAL state: %d, err=%d. handle: %p",info->state,ret, Handle);
+                ALOGD("AML_HWEncNAL state: %d, err=%d. handle: %p",info->state,ret, Handle);
                 //ret = AMVENC_SKIPPED_PICTURE; //need debug
                 info->state = AMVEnc_Analyzing_Frame;  // walk around to fix the poll timeout
                 return ret;
             }
 
             if ((ret != AMVENC_PICTURE_READY)&&(ret != AMVENC_SUCCESS)&&(ret != AMVENC_NEW_IDR)){
-                //ALOGV("AML_HWEncNAL state: %d, err=%d. handle: %p",info->state,ret, Handle);
+                ALOGV("not AMVENC_PICTURE_READY - AML_HWEncNAL state: %d, err=%d. handle: %p",info->state,ret, Handle);
                 return ret;
             }
 
@@ -349,6 +358,7 @@ AMVEnc_Status AML_HWEncNAL(AMVEncHandle *Handle, unsigned char *buffer, unsigned
 
             if((ret == AMVENC_PICTURE_READY)||(ret == AMVENC_NEW_IDR)){
                 info->first_frame = false;
+                #if 1
                 ret = AMPostRateControl(&info->hw_info,(info->nal_unit_type == AVC_NALTYPE_IDR),&info->skip_next_frame,(datalen<<3));
                 if((ret == AMVENC_SKIPPED_PICTURE)&&(info->freerun ==false)){
                     info->state = AMVEnc_Analyzing_Frame;
@@ -359,7 +369,7 @@ AMVEnc_Status AML_HWEncNAL(AMVEncHandle *Handle, unsigned char *buffer, unsigned
                     //ALOGE("AML_HWEncNAL re-encode");
                     ret = AMVEncodeSlice(&info->hw_info,buffer,&datalen, true);
                     if ((ret != AMVENC_PICTURE_READY)&&(ret != AMVENC_SUCCESS)&&(ret != AMVENC_NEW_IDR)){
-                        //ALOGE("AML_HWEncNAL state: %d, err=%d. handle: %p",info->state,ret, Handle);
+                        ALOGE("AML_HWEncNAL state: %d, err=%d. handle: %p",info->state,ret, Handle);
                         return ret;
                     }
                     info->nal_unit_type = (ret == AMVENC_NEW_IDR)?AVC_NALTYPE_IDR:info->nal_unit_type;
@@ -373,11 +383,12 @@ AMVEnc_Status AML_HWEncNAL(AMVEncHandle *Handle, unsigned char *buffer, unsigned
                             return ret;
                         }
                     }else{
-                        //ALOGE("re-encode failed:%d. handle: %p",ret, Handle);
+                        ALOGE("re-encode failed:%d. handle: %p",ret, Handle);
                     }
                 }
+                #endif
                 if(AMVEncodeCommit(&info->hw_info,(info->nal_unit_type == AVC_NALTYPE_IDR))!=AMVENC_SUCCESS){
-                    //ALOGE("Encode Commit  failed:%d. handle: %p",ret, Handle);
+                    ALOGE("Encode Commit  failed:%d. handle: %p",ret, Handle);
                 }
                 info->prevCodedFrameNum = info->coding_order;
                 info->state = AMVEnc_Analyzing_Frame;
@@ -386,6 +397,9 @@ AMVEnc_Status AML_HWEncNAL(AMVEncHandle *Handle, unsigned char *buffer, unsigned
             }else{
                 ret = AMVENC_SUCCESS;
             }
+
+            // ALOGD("Final Len  %d", *buf_nal_size);
+            
             break;
         default:
             ret = AMVENC_WRONG_STATE;
